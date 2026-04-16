@@ -1,10 +1,10 @@
-name: Extract Android mPaaS SDK (Brute Force)
+name: Android SDK Recon & Extract
 
 on: 
   workflow_dispatch:
 
 jobs:
-  extract:
+  recon:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -15,76 +15,62 @@ jobs:
         with:
           python-version: '3.10'
 
-      # [추가된 해결책] 파이썬 수사관이 일할 수 있게 도구를 설치합니다.
-      - name: Install dependencies
+      - name: Install requests
         run: pip install requests
 
-      - name: Targeted Artifact Carving
+      - name: Reconnaissance & Metadata Carving
         shell: python
         run: |
-          import os
           import requests
           from requests.auth import HTTPBasicAuth
+          import os
 
           auth = HTTPBasicAuth("mvn_read_ws", "mrk8929")
           base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
-          output_dir = "mPaaS_Artifacts"
-          os.makedirs(output_dir, exist_ok=True)
-
-          # mPaaS 내부에서 사용하는 실제 경로 후보군
-          targets = [
-              "com/mpaas/android/datacenter",
-              "com/mpaas/android/sqlite",
-              "com/alipay/android/phone/mobilesdk/datacenter-build",
-              "com/alipay/android/phone/mobilesdk/sqlite-build"
+          
+          # [수사 대상 1] 가장 상위 지도(Metadata) 파일들
+          metadata_urls = [
+              f"{base_url}/com/mpaas/android/mpaas-baseline/maven-metadata.xml",
+              f"{base_url}/com/mpaas/android/datacenter/maven-metadata.xml",
+              f"{base_url}/com/mpaas/android/sqlite/maven-metadata.xml"
           ]
 
-          # 유효한 버전 후보군
-          versions = ["10.2.3", "10.2.3-1850000", "10.1.68", "10.1.60"]
+          # [수사 대상 2] 전체 설계도(BOM) 파일
+          # 이 파일 안에 모든 하위 모듈의 진짜 이름과 버전이 적혀 있습니다.
+          bom_url = f"{base_url}/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
 
-          print(f"[*] Starting brute-force search on {base_url}...")
+          print("[*] Starting Reconnaissance phase...")
+          
+          os.makedirs("recon_results", exist_ok=True)
 
-          found_any = False
-          for target in targets:
-              artifact_id = target.split('/')[-1]
-              for ver in versions:
-                  file_url = f"{base_url}/{target}/{ver}/{artifact_id}-{ver}.aar"
-                  print(f"[?] Trying: {file_url}")
-                  
-                  try:
-                      # 타임아웃을 넉넉히 주어 네트워크 지연 대비
-                      resp = requests.head(file_url, auth=auth, timeout=15)
-                      if resp.status_code == 200:
-                          print(f"[!] FOUND! Downloading: {file_url}")
-                          file_resp = requests.get(file_url, auth=auth)
-                          with open(f"{output_dir}/{artifact_id}-{ver}.aar", "wb") as f:
-                              f.write(file_resp.content)
-                          found_any = True
-                      else:
-                          # JAR 확장자 시도
-                          jar_url = file_url.replace(".aar", ".jar")
-                          resp_jar = requests.head(jar_url, auth=auth, timeout=10)
-                          if resp_jar.status_code == 200:
-                              print(f"[!] FOUND (JAR)! Downloading: {jar_url}")
-                              file_resp = requests.get(jar_url, auth=auth)
-                              with open(f"{output_dir}/{artifact_id}-{ver}.jar", "wb") as f:
-                                  f.write(file_resp.content)
-                              found_any = True
-                  except Exception as e:
-                      print(f"[E] Error: {e}")
+          # 1. 지도 파일들 확보 시도
+          for url in metadata_urls:
+              name = url.split('/')[-2] + "_metadata.xml"
+              print(f"[?] Looking for map: {url}")
+              r = requests.get(url, auth=auth)
+              if r.status_code == 200:
+                  print(f"    [+] Found Metadata for {name}!")
+                  with open(f"recon_results/{name}", "w") as f: f.write(r.text)
+              else:
+                  print(f"    [-] Not found (Status: {r.status_code})")
 
-          if not found_any:
-              print("[X] Critical Error: No artifacts found. It's a dead end.")
-              exit(1)
+          # 2. 설계도(BOM) 확보 시도 (가장 중요)
+          print(f"[?] Attempting to steal BOM: {bom_url}")
+          r_bom = requests.get(bom_url, auth=auth)
+          if r_bom.status_code == 200:
+              print("    [!] BOM STOLEN SUCCESSFULLY!")
+              with open("recon_results/master_plan.pom", "w") as f: f.write(r_bom.text)
+              
+              # 설계도 내용 중 datacenter와 sqlite 관련 줄만 출력해서 육안 확인
+              print("\n--- BOM CLUES (Search results) ---")
+              for line in r_bom.text.split('\n'):
+                  if "datacenter" in line or "sqlite" in line:
+                      print(line.strip())
+          else:
+              print(f"    [X] Failed to get BOM (Status: {r_bom.status_code})")
 
-      - name: Zip and Upload
-        run: |
-          ls -lh mPaaS_Artifacts/
-          zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
-
-      - name: Upload Artifact
+      - name: Upload Recon Data
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Android_Carved_Files
-          path: mPaaS_Android_SDK.zip
-          retention-days: 1
+          name: mPaaS_Recon_Data
+          path: recon_results/
