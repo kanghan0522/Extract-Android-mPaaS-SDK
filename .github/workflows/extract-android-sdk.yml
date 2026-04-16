@@ -11,67 +11,72 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Create Gradle Downloader (Direct Artifact)
+      - name: Brute-force Download mPaaS Artifacts
         run: |
-          cat <<EOF > settings.gradle
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven {
-                      url = uri("https://mvn.cloud.alipay.com/nexus/content/repositories/releases/")
-                      allowInsecureProtocol = true
-                      credentials {
-                          username = "mvn_read_ws"
-                          password = "mrk8929"
-                      }
+          mkdir -p mPaaS_Artifacts
+          cd mPaaS_Artifacts
+
+          # 인증 정보 설정
+          AUTH="mvn_read_ws:mrk8929"
+          BASE_URL="https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
+
+          echo "Starting targeted download of Datacenter/SQLCipher components..."
+
+          # [전략] 알리바바 서버의 3가지 실제 물리적 예상 경로를 모두 찌릅니다.
+          # 1. 표준 mPaaS 경로
+          # 2. mobilesdk 내부 경로
+          # 3. 데이터센터 전용 빌드 경로
+
+          URLS=(
+            "$BASE_URL/com/mpaas/android/datacenter/10.2.3-1850000/datacenter-10.2.3-1850000.aar"
+            "$BASE_URL/com/alipay/android/phone/mobilesdk/datacenter-build/10.2.3/datacenter-build-10.2.3.aar"
+            "$BASE_URL/com/alipay/android/phone/mobilesdk/datacenter-build/10.1.68/datacenter-build-10.1.68.aar"
+            "$BASE_URL/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
+          )
+
+          for url in "${URLS[@]}"; do
+            filename=$(basename $url)
+            echo "Trying: $url"
+            curl -u "$AUTH" -L -f -o "$filename" "$url" && echo "✅ Success: $filename" || echo "❌ Failed: $url"
+          done
+
+          # 만약 위 시도가 실패했다면, Gradle을 써서 '진짜 주소'를 역추적(Trace)합니다.
+          cd ..
+          cat <<EOF > build.gradle
+          repositories {
+              maven { 
+                url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
+                credentials { username "mvn_read_ws"; password "mrk8929" }
+              }
+          }
+          configurations { download }
+          dependencies {
+              download platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
+              download "com.mpaas.android:datacenter"
+          }
+          task traceSDK {
+              doLast {
+                  configurations.download.resolvedConfiguration.resolvedArtifacts.each { artifact ->
+                      println "FOUND_PATH: \${artifact.file.absolutePath}"
+                      copy { from artifact.file; into "mPaaS_Artifacts" }
                   }
               }
           }
-          rootProject.name = 'mPaaS-Extractor'
           EOF
 
-          cat <<EOF > build.gradle
-          plugins {
-              id 'java-library'
-          }
-
-          def downloadConfig = configurations.create("mPaaSDownload")
-
-          dependencies {
-              // [논리적 해결] @aar를 붙여 POM 파일이 없어도 무시하고 바이너리만 가져오도록 강제합니다.
-              // 가장 표준적인 10.2.3 버전을 타겟팅합니다.
-              mPaaSDownload "com.mpaas.android:datacenter:10.2.3@aar"
-          }
-
-          tasks.register('extractSDK', Copy) {
-              from downloadConfig
-              into "mPaaS_Artifacts"
-              // 저장 시 확장자가 명확하도록 이름을 정리합니다.
-              rename { it.endsWith('.aar') ? it : "${it}.aar" }
-          }
-          EOF
-
-      - name: Execute Download (Bypass POM)
-        run: |
-          # --no-daemon으로 깨끗한 환경에서 실행하며, 실패 시에도 로그를 상세히 출력합니다.
-          gradle extractSDK --no-daemon --stacktrace
+          # Gradle 7.6으로 버전을 낮춰서 하위 호환성을 확보한 뒤 주소 추적 실행
+          gradle wrapper --gradle-version 7.6
+          ./gradlew traceSDK --info || echo "Trace failed, checking downloaded files..."
 
       - name: Zip and Upload
         run: |
-          ls -R mPaaS_Artifacts/ || echo "No files found"
+          # 추출된 결과물 확인
+          ls -R mPaaS_Artifacts/
           zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Official_Android_AAR
+          name: mPaaS_Final_Android_Files
           path: mPaaS_Android_SDK.zip
           retention-days: 1
