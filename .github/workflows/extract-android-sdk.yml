@@ -1,31 +1,69 @@
-name: Android SDK Final Probe
+name: Android SDK Anonymous Extraction
 
 on: 
   workflow_dispatch:
 
 jobs:
-  probe:
+  extract:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+
       - name: Install requests
         run: pip install requests
-      - name: Anonymous Access Test
+
+      - name: Steal mPaaS Artifacts
         shell: python
         run: |
           import requests
-          url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
+          import os
+
+          # [수사 지침] 확인된 익명 접근 경로와 버전 사용
+          base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
+          version = "10.2.3-1850000"
           
-          print(f"[*] Testing Anonymous Access on: {url}")
-          # auth 매개변수를 완전히 제거하고 요청합니다.
-          r = requests.get(url, timeout=15)
-          
-          print(f"[!] Result: Status {r.status_code}")
-          if r.status_code == 200:
-              print("[+++] AMAZING! Anonymous access is allowed. Stealing now...")
-          else:
-              print("[X] Access Denied. The vault is truly locked.")
-              exit(1)
+          # 포렌식 분석에 가장 중요한 핵심 타겟 리스트
+          targets = [
+              "com/mpaas/android/datacenter",
+              "com/mpaas/android/sqlite",
+              "com/mpaas/android/security",
+              "com/mpaas/android/common"
+          ]
+
+          output_dir = "mPaaS_Android_Artifacts"
+          os.makedirs(output_dir, exist_ok=True)
+
+          print(f"[*] Starting anonymous extraction for version {version}...")
+
+          for path in targets:
+              artifact_id = path.split('/')[-1]
+              # AAR 파일 주소 생성
+              file_url = f"{base_url}/{path}/{version}/{artifact_id}-{version}.aar"
+              
+              print(f"[?] Fetching: {file_url}")
+              r = requests.get(file_url, timeout=20)
+              
+              if r.status_code == 200:
+                  print(f"    [!] SUCCESS: {artifact_id} secured.")
+                  with open(f"{output_dir}/{artifact_id}.aar", "wb") as f:
+                      f.write(r.content)
+              else:
+                  print(f"    [X] Failed: Status {r.status_code}")
+
+      - name: Zip and Upload
+        run: |
+          ls -lh mPaaS_Android_Artifacts/
+          zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/ || zip -r mPaaS_Android_SDK.zip mPaaS_Android_Artifacts/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mPaaS_Official_Android_Artifacts
+          path: mPaaS_Android_SDK.zip
+          retention-days: 1
