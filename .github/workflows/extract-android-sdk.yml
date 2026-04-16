@@ -17,7 +17,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Create Multi-Target Downloader
+      - name: Create Advanced Downloader
         run: |
           cat <<EOF > build.gradle
           apply plugin: 'java'
@@ -27,6 +27,11 @@ jobs:
               mavenCentral()
               maven {
                   url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
+                  // [핵심 해결책] POM 파일이 없어도 에러를 내지 말고 파일(AAR)을 직접 찾으라고 명령합니다.
+                  metadataSources {
+                      mavenPom()
+                      artifact() 
+                  }
                   credentials {
                       username "mvn_read_ws"
                       password "mrk8929"
@@ -37,57 +42,47 @@ jobs:
           configurations {
               mPaaS_Artifacts {
                   canBeResolved = true
-                  // 하나라도 에러 나면 멈추지 말고 계속 진행하도록 설정
-                  ignoreXmlDeclaration = true 
               }
           }
 
           dependencies {
-              // [수사 전략] 가장 가능성 높은 버전 후보군을 전부 그물망에 넣습니다.
-              // @aar를 붙여서 지도가 없어도 본체만 보이면 바로 낚아챕니다.
+              // 에러 로그에서 확인되었던 후보 버전들을 전부 등록합니다.
+              mPaaS_Artifacts "com.mpaas.android:datacenter:10.2.3-1850000@aar"
               mPaaS_Artifacts "com.mpaas.android:datacenter:10.2.3@aar"
-              mPaaS_Artifacts "com.mpaas.android:datacenter:10.1.68@aar"
-              mPaaS_Artifacts "com.mpaas.android:datacenter:10.1.60@aar"
-              
-              // 보안/암호화 관련 다른 유망한 라이브러리도 추가 (sqlcrypto 타겟)
+              mPaaS_Artifacts "com.mpaas.android:sqlite:10.2.3-1850000@aar"
               mPaaS_Artifacts "com.mpaas.android:sqlite:10.2.3@aar"
-              mPaaS_Artifacts "com.mpaas.android:sqlite:10.1.68@aar"
           }
 
           tasks.register('extractMySDK', Copy) {
-              // 찾지 못한 파일이 있어도 무시하고 찾은 것만 복사
-              duplicatesStrategy = DuplicatesStrategy.INCLUDE
               from configurations.mPaaS_Artifacts
               into "extracted_files"
-              rename { filename ->
-                  // 확장자가 없거나 이상하게 복사되는 경우 보정
-                  if (!filename.endsWith(".aar")) return filename + ".aar"
-                  return filename
-              }
+              // 동일한 파일이 있어도 무시하고 진행
+              duplicatesStrategy = DuplicatesStrategy.EXCLUDE
           }
           EOF
 
-      - name: Execute Brute-Force Download
+      - name: Execute Force Download
         run: |
+          # 하위 호환성이 가장 좋은 7.6 버전을 사용합니다.
           gradle wrapper --gradle-version 7.6
-          # continue 옵션을 줘서 일부 버전이 없어도 끝까지 실행하게 합니다.
-          ./gradlew extractMySDK --continue || echo "Some versions failed, but checking for successes..."
+          # 한 개라도 찾으면 성공하도록 --continue 옵션을 유지합니다.
+          ./gradlew extractMySDK --continue || echo "Some targets missing, but checking for files..."
 
       - name: Verify and Zip
         run: |
-          echo "### Contents of extracted_files ###"
-          ls -lh extracted_files/ || echo "Folder is empty"
+          echo "### Final Carving Results ###"
+          ls -R extracted_files/ || echo "Still empty..."
           
           if [ "$(ls -A extracted_files/)" ]; then
             zip -r mPaaS_Android_SDK.zip extracted_files/
           else
-            echo "Error: All target versions failed. Checking network/auth..."
+            echo "Error: Failed to carve any AAR files. Check repository access."
             exit 1
           fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Final_Android_Files
+          name: mPaaS_Final_Android_AARs
           path: mPaaS_Android_SDK.zip
           retention-days: 1
