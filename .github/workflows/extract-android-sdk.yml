@@ -5,7 +5,6 @@ on:
 
 jobs:
   build:
-    # 리눅스 환경에서 실행 (Gradle 9.4.1 기본 탑재)
     runs-on: ubuntu-latest
 
     steps:
@@ -18,49 +17,57 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Create Lightweight Downloader
+      - name: Create Gradle Downloader (v9.x Compatible)
         run: |
-          # 안드로이드 플러그인 의존성 없이, 순수하게 Maven에서 파일만 채가는 스크립트
-          cat <<EOF > build.gradle
-          plugins {
-              id 'java'
-          }
-
-          repositories {
-              google()
-              mavenCentral()
-              maven {
-                  url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
-                  credentials {
-                      username "mvn_read_ws"
-                      password "mrk8929"
+          # 1. settings.gradle 생성 (Gradle 9부터는 여기서 저장소 설정을 권장합니다)
+          cat <<EOF > settings.gradle
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven {
+                      url = uri("https://mvn.cloud.alipay.com/nexus/content/repositories/releases/")
+                      credentials {
+                          username = "mvn_read_ws"
+                          password = "mrk8929"
+                      }
                   }
               }
           }
+          rootProject.name = 'mPaaS-Extractor'
+          EOF
 
-          configurations {
-              mPaaSDownload
+          # 2. build.gradle 생성 (최신 문법 적용)
+          cat <<EOF > build.gradle
+          plugins {
+              id 'java-library'
           }
 
+          // 다운로드 전용 설정 그룹 생성
+          def downloadConfig = configurations.create("mPaaSDownload")
+
           dependencies {
-              // mPaaS 데이터센터 모듈을 직접 지정 (버전은 서버가 자백한 최신값 사용)
+              // 이전 로그에서 확인된 가장 유망한 버전을 타격합니다.
               mPaaSDownload "com.mpaas.android:datacenter:10.2.3-1850000"
           }
 
+          // 파일을 복사하는 태스크
           tasks.register('extractSDK', Copy) {
-              from configurations.mPaaSDownload
+              from downloadConfig
               into "mPaaS_Artifacts"
           }
           EOF
 
-      - name: Run Downloader
+      - name: Execute Download
         run: |
-          # Gradle 9.x에서 안전하게 실행
-          gradle extractSDK --info
+          # --no-daemon 옵션으로 깔끔하게 실행
+          gradle extractSDK --no-daemon --info
 
       - name: Zip and Upload
         run: |
-          # 추출된 AAR 파일들을 압축
+          # 추출된 파일이 있는지 확인하고 압축
+          ls -R mPaaS_Artifacts/
           zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
 
       - name: Upload Artifact
