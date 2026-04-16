@@ -39,11 +39,8 @@ jobs:
           configurations { downloadTarget }
 
           dependencies {
-              // [최종 해결] 에러 로그가 알려준 가장 최신 버전으로 정확히 고정
-              downloadTarget platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
-              
-              // BOM(베이스라인)이 지정해주는 버전을 따르도록 와일드카드(+) 제거
-              downloadTarget "com.mpaas.android:datacenter"
+              // [최종 해결] BOM을 우회하고 컴포넌트의 버전을 직접 명시하여 다운로드
+              downloadTarget "com.mpaas.android:datacenter:10.2.3-1850000"
           }
 
           task fetchDependencies {
