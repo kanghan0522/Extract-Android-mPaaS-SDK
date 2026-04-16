@@ -17,7 +17,7 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Create Gradle Force-Downloader
+      - name: Create Multi-Target Downloader
         run: |
           cat <<EOF > build.gradle
           apply plugin: 'java'
@@ -37,40 +37,51 @@ jobs:
           configurations {
               mPaaS_Artifacts {
                   canBeResolved = true
-                  transitive = true // 연관된 모든 라이브러리(SQLCipher 등)도 함께 가져옴
+                  // 하나라도 에러 나면 멈추지 말고 계속 진행하도록 설정
+                  ignoreXmlDeclaration = true 
               }
           }
 
           dependencies {
-              // baseline을 통해 연관된 모든 아티팩트를 묶음으로 호출
-              mPaaS_Artifacts platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
-              // 분석 타겟인 datacenter 명시
-              mPaaS_Artifacts "com.mpaas.android:datacenter"
+              // [수사 전략] 가장 가능성 높은 버전 후보군을 전부 그물망에 넣습니다.
+              // @aar를 붙여서 지도가 없어도 본체만 보이면 바로 낚아챕니다.
+              mPaaS_Artifacts "com.mpaas.android:datacenter:10.2.3@aar"
+              mPaaS_Artifacts "com.mpaas.android:datacenter:10.1.68@aar"
+              mPaaS_Artifacts "com.mpaas.android:datacenter:10.1.60@aar"
+              
+              // 보안/암호화 관련 다른 유망한 라이브러리도 추가 (sqlcrypto 타겟)
+              mPaaS_Artifacts "com.mpaas.android:sqlite:10.2.3@aar"
+              mPaaS_Artifacts "com.mpaas.android:sqlite:10.1.68@aar"
           }
 
-          // [핵심] 실제로 파일을 로컬로 복사하는 태스크 정의
           tasks.register('extractMySDK', Copy) {
+              // 찾지 못한 파일이 있어도 무시하고 찾은 것만 복사
+              duplicatesStrategy = DuplicatesStrategy.INCLUDE
               from configurations.mPaaS_Artifacts
               into "extracted_files"
+              rename { filename ->
+                  // 확장자가 없거나 이상하게 복사되는 경우 보정
+                  if (!filename.endsWith(".aar")) return filename + ".aar"
+                  return filename
+              }
           }
           EOF
 
-      - name: Execute Force Download
+      - name: Execute Brute-Force Download
         run: |
           gradle wrapper --gradle-version 7.6
-          # help 대신 우리가 만든 'extractMySDK' 태스크를 직접 실행합니다.
-          ./gradlew extractMySDK --info --stacktrace
+          # continue 옵션을 줘서 일부 버전이 없어도 끝까지 실행하게 합니다.
+          ./gradlew extractMySDK --continue || echo "Some versions failed, but checking for successes..."
 
       - name: Verify and Zip
         run: |
           echo "### Contents of extracted_files ###"
-          ls -R extracted_files/ || echo "Folder is still empty"
+          ls -lh extracted_files/ || echo "Folder is empty"
           
-          # 파일이 존재할 때만 압축
           if [ "$(ls -A extracted_files/)" ]; then
             zip -r mPaaS_Android_SDK.zip extracted_files/
           else
-            echo "Error: Download failed again. Check the credentials or version."
+            echo "Error: All target versions failed. Checking network/auth..."
             exit 1
           fi
 
