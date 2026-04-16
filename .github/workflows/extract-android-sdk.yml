@@ -5,6 +5,7 @@ on:
 
 jobs:
   build:
+    # 리눅스 환경에서 실행 (Gradle 9.4.1 기본 탑재)
     runs-on: ubuntu-latest
 
     steps:
@@ -17,81 +18,54 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Create Standard Android Project Structure
+      - name: Create Lightweight Downloader
         run: |
-          mkdir mPaaS_Project
-          cd mPaaS_Project
-          
-          # 1. settings.gradle 생성
-          echo "rootProject.name = 'mPaaS_Extract'" > settings.gradle
-          echo "include ':app'" >> settings.gradle
-          
-          # 2. Project 레벨 build.gradle 생성 (가이드와 동일)
+          # 안드로이드 플러그인 의존성 없이, 순수하게 Maven에서 파일만 채가는 스크립트
           cat <<EOF > build.gradle
-          buildscript {
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven {
-                      url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
-                      credentials { username "mvn_read_ws"; password "mrk8929" }
-                  }
-              }
-              dependencies {
-                  classpath 'com.android.tools.build:gradle:7.4.2'
-              }
-          }
-          allprojects {
-              repositories {
-                  google()
-                  mavenCentral()
-                  maven {
-                      url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
-                      credentials { username "mvn_read_ws"; password "mrk8929" }
-                  }
-              }
-          }
-          EOF
-          
-          # 3. App 모듈 구조 생성
-          mkdir -p app/src/main
-          echo '<manifest package="com.example.mpaas"><application/></manifest>' > app/src/main/AndroidManifest.xml
-          
-          # 4. Module 레벨 build.gradle 생성 (가이드와 동일)
-          cat <<EOF > app/build.gradle
           plugins {
-              id 'com.android.application'
+              id 'java'
           }
-          android {
-              namespace 'com.example.mpaas'
-              compileSdk 33
+
+          repositories {
+              google()
+              mavenCentral()
+              maven {
+                  url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
+                  credentials {
+                      username "mvn_read_ws"
+                      password "mrk8929"
+                  }
+              }
           }
+
+          configurations {
+              mPaaSDownload
+          }
+
           dependencies {
-              implementation platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
-              implementation "com.mpaas.android:datacenter"
+              // mPaaS 데이터센터 모듈을 직접 지정 (버전은 서버가 자백한 최신값 사용)
+              mPaaSDownload "com.mpaas.android:datacenter:10.2.3-1850000"
+          }
+
+          tasks.register('extractSDK', Copy) {
+              from configurations.mPaaSDownload
+              into "mPaaS_Artifacts"
           }
           EOF
-          
-          # 5. Gradle 호환성 해결을 위해 적절한 버전을 로드
-          gradle wrapper --gradle-version 7.5.1
 
-      - name: Download Dependencies via Android Gradle Plugin
+      - name: Run Downloader
         run: |
-          cd mPaaS_Project
-          # 빌드를 실행하지 않고 의존성 캐시만 전부 다운로드 받도록 트리거
-          ./gradlew app:dependencies --info
+          # Gradle 9.x에서 안전하게 실행
+          gradle extractSDK --info
 
-      - name: Collect and Zip Artifacts
+      - name: Zip and Upload
         run: |
-          mkdir mPaaS_Android_SDK
-          # 로컬 캐시에 다운로드된 모든 AAR 복사
-          find ~/.gradle/caches/modules-2/files-2.1/ -name "*.aar" -exec cp {} mPaaS_Android_SDK/ \;
-          
-          zip -r mPaaS_Android_SDK.zip mPaaS_Android_SDK/
+          # 추출된 AAR 파일들을 압축
+          zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
 
-      - name: Upload Artifact for Download
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Official_Android_Artifacts
+          name: mPaaS_Official_Android_AAR
           path: mPaaS_Android_SDK.zip
           retention-days: 1
