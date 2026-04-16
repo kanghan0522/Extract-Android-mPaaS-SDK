@@ -28,7 +28,6 @@ jobs:
               google()
               mavenCentral()
               maven {
-                  // [에러 해결 1] https로 고정하여 계정 정보 유실 방지
                   url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
                   credentials {
                       username "mvn_read_ws"
@@ -40,11 +39,11 @@ jobs:
           configurations { downloadTarget }
 
           dependencies {
-              // [에러 해결 2] 베이스라인 뒤에 패치버전(+) 허용
-              downloadTarget platform("com.mpaas.android:mpaas-baseline:10.2.3.+")
+              // [최종 해결] 에러 로그가 알려준 가장 최신 버전으로 정확히 고정
+              downloadTarget platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
               
-              // [에러 해결 3] BOM 매칭 실패 시 단독으로라도 다운받도록 와일드카드(+) 추가
-              downloadTarget "com.mpaas.android:datacenter:+"
+              // BOM(베이스라인)이 지정해주는 버전을 따르도록 와일드카드(+) 제거
+              downloadTarget "com.mpaas.android:datacenter"
           }
 
           task fetchDependencies {
@@ -57,13 +56,11 @@ jobs:
 
       - name: Download SDK via Gradle
         run: |
-          # 로그를 더 자세히 보기 위해 --info 옵션 추가
           gradle fetchDependencies --info
 
       - name: Collect and Zip Artifacts
         run: |
           mkdir mPaaS_Android_SDK
-          # 캐시 폴더에서 AAR과 JAR 파일 복사
           find ~/.gradle/caches/modules-2/files-2.1/ -name "*.aar" -exec cp {} mPaaS_Android_SDK/ \;
           find ~/.gradle/caches/modules-2/files-2.1/ -name "*.jar" -exec cp {} mPaaS_Android_SDK/ \;
           
