@@ -17,49 +17,60 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Force Resolve and Carve Artifacts
+      - name: Create Gradle Force-Downloader
         run: |
-          # 1. 의존성 강제 다운로드를 위한 build.gradle 생성
           cat <<EOF > build.gradle
           apply plugin: 'java'
+
           repositories {
               google()
               mavenCentral()
               maven {
                   url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
-                  credentials { username "mvn_read_ws"; password "mrk8929" }
+                  credentials {
+                      username "mvn_read_ws"
+                      password "mrk8929"
+                  }
               }
           }
+
           configurations {
-              mPaaS_Force_Download { canBeResolved = true }
+              mPaaS_Artifacts {
+                  canBeResolved = true
+                  transitive = true // 연관된 모든 라이브러리(SQLCipher 등)도 함께 가져옴
+              }
           }
+
           dependencies {
-              // BOM을 통하지 않고 직접 컴포넌트를 지목하여 강제 다운로드 트리거
-              mPaaS_Force_Download "com.mpaas.android:datacenter:10.2.3-1850000"
+              // baseline을 통해 연관된 모든 아티팩트를 묶음으로 호출
+              mPaaS_Artifacts platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
+              // 분석 타겟인 datacenter 명시
+              mPaaS_Artifacts "com.mpaas.android:datacenter"
+          }
+
+          // [핵심] 실제로 파일을 로컬로 복사하는 태스크 정의
+          tasks.register('extractMySDK', Copy) {
+              from configurations.mPaaS_Artifacts
+              into "extracted_files"
           }
           EOF
 
-          # 2. Gradle 실행 (실제 파일을 로컬 캐시에 박아넣는 과정)
-          gradle wrapper --gradle-version 7.6
-          ./gradlew help --refresh-dependencies # 의존성 새로고침 강제
-
-          # 3. [포렌식 기법] Gradle 캐시 폴더 전체를 뒤져서 mpaas 관련 .aar 파일을 추출
-          mkdir -p mPaaS_Artifacts
-          echo "Carving .aar files from Gradle cache..."
-          find ~/.gradle/caches/modules-2/files-2.1/com.mpaas.android -name "*.aar" -exec cp {} mPaaS_Artifacts/ \;
-          find ~/.gradle/caches/modules-2/files-2.1/com.alipay.android -name "*.aar" -exec cp {} mPaaS_Artifacts/ \;
-
-          # 파일이 제대로 복사되었는지 로그에 출력 (비어있으면 여기서 확인 가능)
-          echo "### Extracted Files List ###"
-          ls -R mPaaS_Artifacts/
-
-      - name: Zip and Upload
+      - name: Execute Force Download
         run: |
-          # 파일이 있을 때만 압축, 없으면 에러를 내서 '빈 파일' 생성을 방지
-          if [ "$(ls -A mPaaS_Artifacts/)" ]; then
-            zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
+          gradle wrapper --gradle-version 7.6
+          # help 대신 우리가 만든 'extractMySDK' 태스크를 직접 실행합니다.
+          ./gradlew extractMySDK --info --stacktrace
+
+      - name: Verify and Zip
+        run: |
+          echo "### Contents of extracted_files ###"
+          ls -R extracted_files/ || echo "Folder is still empty"
+          
+          # 파일이 존재할 때만 압축
+          if [ "$(ls -A extracted_files/)" ]; then
+            zip -r mPaaS_Android_SDK.zip extracted_files/
           else
-            echo "Error: No artifacts found! The vault is empty."
+            echo "Error: Download failed again. Check the credentials or version."
             exit 1
           fi
 
