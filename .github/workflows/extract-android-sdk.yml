@@ -1,88 +1,88 @@
-name: Extract Android mPaaS SDK
+name: Extract Android mPaaS SDK (Brute Force)
 
 on: 
   workflow_dispatch:
 
 jobs:
-  build:
+  extract:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          python-version: '3.10'
 
-      - name: Create Advanced Downloader
+      - name: Targeted Artifact Carving
+        shell: python
         run: |
-          cat <<EOF > build.gradle
-          apply plugin: 'java'
+          import os
+          import requests
+          from requests.auth import HTTPBasicAuth
 
-          repositories {
-              google()
-              mavenCentral()
-              maven {
-                  url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
-                  // [핵심 해결책] POM 파일이 없어도 에러를 내지 말고 파일(AAR)을 직접 찾으라고 명령합니다.
-                  metadataSources {
-                      mavenPom()
-                      artifact() 
-                  }
-                  credentials {
-                      username "mvn_read_ws"
-                      password "mrk8929"
-                  }
-              }
-          }
+          # 설정 정보
+          auth = HTTPBasicAuth("mvn_read_ws", "mrk8929")
+          base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
+          output_dir = "mPaaS_Artifacts"
+          os.makedirs(output_dir, exist_ok=True)
 
-          configurations {
-              mPaaS_Artifacts {
-                  canBeResolved = true
-              }
-          }
+          # [수색 대상] 알리바바 서버에 숨겨진 변종 경로들
+          # mPaaS는 버전에 따라 그룹ID나 아티팩트ID 뒤에 '-build' 등을 붙이기도 합니다.
+          targets = [
+              "com/mpaas/android/datacenter",
+              "com/mpaas/android/sqlite",
+              "com/alipay/android/phone/mobilesdk/datacenter-build",
+              "com/alipay/android/phone/mobilesdk/sqlite-build"
+          ]
 
-          dependencies {
-              // 에러 로그에서 확인되었던 후보 버전들을 전부 등록합니다.
-              mPaaS_Artifacts "com.mpaas.android:datacenter:10.2.3-1850000@aar"
-              mPaaS_Artifacts "com.mpaas.android:datacenter:10.2.3@aar"
-              mPaaS_Artifacts "com.mpaas.android:sqlite:10.2.3-1850000@aar"
-              mPaaS_Artifacts "com.mpaas.android:sqlite:10.2.3@aar"
-          }
+          # [수색 버전] 로그에서 확인된 버전과 표준 버전들
+          versions = ["10.2.3", "10.2.3-1850000", "10.1.68", "10.1.60"]
 
-          tasks.register('extractMySDK', Copy) {
-              from configurations.mPaaS_Artifacts
-              into "extracted_files"
-              // 동일한 파일이 있어도 무시하고 진행
-              duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-          }
-          EOF
+          print(f"[*] Starting brute-force search on {base_url}...")
 
-      - name: Execute Force Download
+          found_any = False
+          for target in targets:
+              artifact_id = target.split('/')[-1]
+              for ver in versions:
+                  # 실제 파일 URL 구성 (Maven 표준 구조)
+                  file_url = f"{base_url}/{target}/{ver}/{artifact_id}-{ver}.aar"
+                  print(f"[?] Trying: {file_url}")
+                  
+                  try:
+                      resp = requests.head(file_url, auth=auth, timeout=10)
+                      if resp.status_code == 200:
+                          print(f"[!] FOUND! Downloading: {file_url}")
+                          file_resp = requests.get(file_url, auth=auth)
+                          with open(f"{output_dir}/{artifact_id}-{ver}.aar", "wb") as f:
+                              f.write(file_resp.content)
+                          found_any = True
+                      else:
+                          # 가끔 .aar 대신 .jar로 존재하는 경우도 대비
+                          jar_url = file_url.replace(".aar", ".jar")
+                          resp_jar = requests.head(jar_url, auth=auth, timeout=5)
+                          if resp_jar.status_code == 200:
+                              print(f"[!] FOUND (JAR)! Downloading: {jar_url}")
+                              file_resp = requests.get(jar_url, auth=auth)
+                              with open(f"{output_dir}/{artifact_id}-{ver}.jar", "wb") as f:
+                                  f.write(file_resp.content)
+                              found_any = True
+                  except Exception as e:
+                      print(f"[E] Error trying {file_url}: {e}")
+
+          if not found_any:
+              print("[X] Critical Error: No artifacts found in any known paths.")
+              exit(1)
+
+      - name: Zip and Upload
         run: |
-          # 하위 호환성이 가장 좋은 7.6 버전을 사용합니다.
-          gradle wrapper --gradle-version 7.6
-          # 한 개라도 찾으면 성공하도록 --continue 옵션을 유지합니다.
-          ./gradlew extractMySDK --continue || echo "Some targets missing, but checking for files..."
-
-      - name: Verify and Zip
-        run: |
-          echo "### Final Carving Results ###"
-          ls -R extracted_files/ || echo "Still empty..."
-          
-          if [ "$(ls -A extracted_files/)" ]; then
-            zip -r mPaaS_Android_SDK.zip extracted_files/
-          else
-            echo "Error: Failed to carve any AAR files. Check repository access."
-            exit 1
-          fi
+          ls -lh mPaaS_Artifacts/
+          zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Final_Android_AARs
+          name: mPaaS_Android_Carved_Files
           path: mPaaS_Android_SDK.zip
           retention-days: 1
