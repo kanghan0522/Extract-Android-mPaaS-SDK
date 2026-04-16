@@ -11,68 +11,57 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Brute-force Download mPaaS Artifacts
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Force Resolve and Carve Artifacts
         run: |
-          mkdir -p mPaaS_Artifacts
-          cd mPaaS_Artifacts
-
-          # 인증 정보 설정
-          AUTH="mvn_read_ws:mrk8929"
-          BASE_URL="https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
-
-          echo "Starting targeted download of Datacenter/SQLCipher components..."
-
-          # [전략] 알리바바 서버의 3가지 실제 물리적 예상 경로를 모두 찌릅니다.
-          # 1. 표준 mPaaS 경로
-          # 2. mobilesdk 내부 경로
-          # 3. 데이터센터 전용 빌드 경로
-
-          URLS=(
-            "$BASE_URL/com/mpaas/android/datacenter/10.2.3-1850000/datacenter-10.2.3-1850000.aar"
-            "$BASE_URL/com/alipay/android/phone/mobilesdk/datacenter-build/10.2.3/datacenter-build-10.2.3.aar"
-            "$BASE_URL/com/alipay/android/phone/mobilesdk/datacenter-build/10.1.68/datacenter-build-10.1.68.aar"
-            "$BASE_URL/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
-          )
-
-          for url in "${URLS[@]}"; do
-            filename=$(basename $url)
-            echo "Trying: $url"
-            curl -u "$AUTH" -L -f -o "$filename" "$url" && echo "✅ Success: $filename" || echo "❌ Failed: $url"
-          done
-
-          # 만약 위 시도가 실패했다면, Gradle을 써서 '진짜 주소'를 역추적(Trace)합니다.
-          cd ..
+          # 1. 의존성 강제 다운로드를 위한 build.gradle 생성
           cat <<EOF > build.gradle
+          apply plugin: 'java'
           repositories {
-              maven { 
-                url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
-                credentials { username "mvn_read_ws"; password "mrk8929" }
+              google()
+              mavenCentral()
+              maven {
+                  url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
+                  credentials { username "mvn_read_ws"; password "mrk8929" }
               }
           }
-          configurations { download }
+          configurations {
+              mPaaS_Force_Download { canBeResolved = true }
+          }
           dependencies {
-              download platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
-              download "com.mpaas.android:datacenter"
-          }
-          task traceSDK {
-              doLast {
-                  configurations.download.resolvedConfiguration.resolvedArtifacts.each { artifact ->
-                      println "FOUND_PATH: \${artifact.file.absolutePath}"
-                      copy { from artifact.file; into "mPaaS_Artifacts" }
-                  }
-              }
+              // BOM을 통하지 않고 직접 컴포넌트를 지목하여 강제 다운로드 트리거
+              mPaaS_Force_Download "com.mpaas.android:datacenter:10.2.3-1850000"
           }
           EOF
 
-          # Gradle 7.6으로 버전을 낮춰서 하위 호환성을 확보한 뒤 주소 추적 실행
+          # 2. Gradle 실행 (실제 파일을 로컬 캐시에 박아넣는 과정)
           gradle wrapper --gradle-version 7.6
-          ./gradlew traceSDK --info || echo "Trace failed, checking downloaded files..."
+          ./gradlew help --refresh-dependencies # 의존성 새로고침 강제
+
+          # 3. [포렌식 기법] Gradle 캐시 폴더 전체를 뒤져서 mpaas 관련 .aar 파일을 추출
+          mkdir -p mPaaS_Artifacts
+          echo "Carving .aar files from Gradle cache..."
+          find ~/.gradle/caches/modules-2/files-2.1/com.mpaas.android -name "*.aar" -exec cp {} mPaaS_Artifacts/ \;
+          find ~/.gradle/caches/modules-2/files-2.1/com.alipay.android -name "*.aar" -exec cp {} mPaaS_Artifacts/ \;
+
+          # 파일이 제대로 복사되었는지 로그에 출력 (비어있으면 여기서 확인 가능)
+          echo "### Extracted Files List ###"
+          ls -R mPaaS_Artifacts/
 
       - name: Zip and Upload
         run: |
-          # 추출된 결과물 확인
-          ls -R mPaaS_Artifacts/
-          zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
+          # 파일이 있을 때만 압축, 없으면 에러를 내서 '빈 파일' 생성을 방지
+          if [ "$(ls -A mPaaS_Artifacts/)" ]; then
+            zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
+          else
+            echo "Error: No artifacts found! The vault is empty."
+            exit 1
+          fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
