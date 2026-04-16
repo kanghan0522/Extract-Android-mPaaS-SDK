@@ -11,40 +11,82 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Direct Download mPaaS Datacenter AAR
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Create Standard Android Project Structure
+        run: |
+          mkdir mPaaS_Project
+          cd mPaaS_Project
+          
+          # 1. settings.gradle 생성
+          echo "rootProject.name = 'mPaaS_Extract'" > settings.gradle
+          echo "include ':app'" >> settings.gradle
+          
+          # 2. Project 레벨 build.gradle 생성 (가이드와 동일)
+          cat <<EOF > build.gradle
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven {
+                      url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
+                      credentials { username "mvn_read_ws"; password "mrk8929" }
+                  }
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:7.4.2'
+              }
+          }
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+                  maven {
+                      url "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/"
+                      credentials { username "mvn_read_ws"; password "mrk8929" }
+                  }
+              }
+          }
+          EOF
+          
+          # 3. App 모듈 구조 생성
+          mkdir -p app/src/main
+          echo '<manifest package="com.example.mpaas"><application/></manifest>' > app/src/main/AndroidManifest.xml
+          
+          # 4. Module 레벨 build.gradle 생성 (가이드와 동일)
+          cat <<EOF > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.example.mpaas'
+              compileSdk 33
+          }
+          dependencies {
+              implementation platform("com.mpaas.android:mpaas-baseline:10.2.3-1850000")
+              implementation "com.mpaas.android:datacenter"
+          }
+          EOF
+          
+          # 5. Gradle 호환성 해결을 위해 적절한 버전을 로드
+          gradle wrapper --gradle-version 7.5.1
+
+      - name: Download Dependencies via Android Gradle Plugin
+        run: |
+          cd mPaaS_Project
+          # 빌드를 실행하지 않고 의존성 캐시만 전부 다운로드 받도록 트리거
+          ./gradlew app:dependencies --info
+
+      - name: Collect and Zip Artifacts
         run: |
           mkdir mPaaS_Android_SDK
-          cd mPaaS_Android_SDK
-
-          echo "Downloading datacenter component directly from Alipay Nexus..."
+          # 로컬 캐시에 다운로드된 모든 AAR 복사
+          find ~/.gradle/caches/modules-2/files-2.1/ -name "*.aar" -exec cp {} mPaaS_Android_SDK/ \;
           
-          # [해결책] Gradle 우회: 알리페이 서버 구조상 가장 보편적인 10.2.3 버전의 datacenter 직접 다운로드
-          # 인증 정보(-u)를 포함하여 curl로 AAR 파일을 다이렉트로 당겨옵니다.
-          curl -u "mvn_read_ws:mrk8929" -O -L "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/datacenter/10.2.3/datacenter-10.2.3.aar" || echo "Failed to download 10.2.3, trying alternative..."
-
-          # 만약 위 버전이 없다면 빌드 넘버가 포함된 최신 버전으로 재시도
-          curl -u "mvn_read_ws:mrk8929" -O -L "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/datacenter/10.2.3-1850000/datacenter-10.2.3-1850000.aar" || echo "Failed fallback download."
-
-          # 다운로드 확인 (용량이 0바이트가 아닌지 체크)
-          ls -lh
-
-      - name: Unzip and Extract Native Libraries (.so)
-        run: |
-          cd mPaaS_Android_SDK
-          
-          # 다운로드된 AAR 파일 압축 해제
-          for f in *.aar; do
-            if [ -f "$f" ]; then
-              echo "Extracting $f..."
-              unzip -q "$f" -d "${f%.aar}_extracted"
-            fi
-          done
-
-          # 보기 좋게 jni 폴더(.so 파일들)만 루트로 복사
-          find . -type d -name "jni" -exec cp -r {} ./native_libs \;
-
-      - name: Zip Artifacts
-        run: |
           zip -r mPaaS_Android_SDK.zip mPaaS_Android_SDK/
 
       - name: Upload Artifact for Download
