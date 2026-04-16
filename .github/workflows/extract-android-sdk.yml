@@ -1,10 +1,10 @@
-name: Android SDK Recon & Extract
+name: Android Deep Recon
 
 on: 
   workflow_dispatch:
 
 jobs:
-  recon:
+  deep_scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -18,7 +18,7 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Reconnaissance & Metadata Carving
+      - name: Deep Directory Scan
         shell: python
         run: |
           import requests
@@ -28,49 +28,38 @@ jobs:
           auth = HTTPBasicAuth("mvn_read_ws", "mrk8929")
           base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
           
-          # [수사 대상 1] 가장 상위 지도(Metadata) 파일들
-          metadata_urls = [
-              f"{base_url}/com/mpaas/android/mpaas-baseline/maven-metadata.xml",
-              f"{base_url}/com/mpaas/android/datacenter/maven-metadata.xml",
-              f"{base_url}/com/mpaas/android/sqlite/maven-metadata.xml"
-          ]
-
-          # [수사 대상 2] 전체 설계도(BOM) 파일
-          # 이 파일 안에 모든 하위 모듈의 진짜 이름과 버전이 적혀 있습니다.
-          bom_url = f"{base_url}/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
-
-          print("[*] Starting Reconnaissance phase...")
+          # [테스트 1] 계정 권한 확인 (가장 기본 파일 찌르기)
+          test_url = f"{base_url}/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
           
-          os.makedirs("recon_results", exist_ok=True)
-
-          # 1. 지도 파일들 확보 시도
-          for url in metadata_urls:
-              name = url.split('/')[-2] + "_metadata.xml"
-              print(f"[?] Looking for map: {url}")
-              r = requests.get(url, auth=auth)
-              if r.status_code == 200:
-                  print(f"    [+] Found Metadata for {name}!")
-                  with open(f"recon_results/{name}", "w") as f: f.write(r.text)
-              else:
-                  print(f"    [-] Not found (Status: {r.status_code})")
-
-          # 2. 설계도(BOM) 확보 시도 (가장 중요)
-          print(f"[?] Attempting to steal BOM: {bom_url}")
-          r_bom = requests.get(bom_url, auth=auth)
-          if r_bom.status_code == 200:
-              print("    [!] BOM STOLEN SUCCESSFULLY!")
-              with open("recon_results/master_plan.pom", "w") as f: f.write(r_bom.text)
-              
-              # 설계도 내용 중 datacenter와 sqlite 관련 줄만 출력해서 육안 확인
-              print("\n--- BOM CLUES (Search results) ---")
-              for line in r_bom.text.split('\n'):
-                  if "datacenter" in line or "sqlite" in line:
-                      print(line.strip())
+          print(f"[*] Testing Credentials on: {test_url}")
+          r = requests.get(test_url, auth=auth)
+          
+          if r.status_code == 200:
+              print("[+] SUCCESS! Credentials are valid.")
+              os.makedirs("recon_results", exist_ok=True)
+              with open("recon_results/baseline_stolen.pom", "w") as f: f.write(r.text)
+          elif r.status_code == 401:
+              print("[!] ERROR: 401 Unauthorized. The account/password is WRONG.")
+              exit(1)
           else:
-              print(f"    [X] Failed to get BOM (Status: {r_bom.status_code})")
+              print(f"[?] Status {r.status_code}: Path might be wrong, but account might be okay.")
 
-      - name: Upload Recon Data
+          # [테스트 2] 대체 경로 탐색 (Alipay mobilesdk 계열)
+          alt_url = f"{base_url}/com/alipay/android/phone/mobilesdk/datacenter-build/maven-metadata.xml"
+          print(f"[*] Checking Alternative Path: {alt_url}")
+          r_alt = requests.get(alt_url, auth=auth)
+          if r_alt.status_code == 200:
+              print("[+] FOUND! mPaaS is using alipay-phone-mobilesdk path.")
+              with open("recon_results/alt_metadata.xml", "w") as f: f.write(r_alt.text)
+
+          # 결과가 없으면 강제로 에러를 내서 Artifacts 누락 방지
+          if not os.path.exists("recon_results") or not os.listdir("recon_results"):
+              print("[X] FATAL: No data recovered from any paths.")
+              exit(1)
+
+      - name: Upload Data
+        if: always() # 실패해도 로그를 남기기 위해 업로드 시도
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Recon_Data
+          name: mPaaS_Deep_Recon_Data
           path: recon_results/
