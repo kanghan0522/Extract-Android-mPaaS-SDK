@@ -17,9 +17,8 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Create Gradle Downloader (v9.x Compatible)
+      - name: Create Gradle Downloader (Direct Artifact)
         run: |
-          # 1. settings.gradle 생성 (Gradle 9부터는 여기서 저장소 설정을 권장합니다)
           cat <<EOF > settings.gradle
           dependencyResolutionManagement {
               repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
@@ -28,6 +27,7 @@ jobs:
                   mavenCentral()
                   maven {
                       url = uri("https://mvn.cloud.alipay.com/nexus/content/repositories/releases/")
+                      allowInsecureProtocol = true
                       credentials {
                           username = "mvn_read_ws"
                           password = "mrk8929"
@@ -38,36 +38,35 @@ jobs:
           rootProject.name = 'mPaaS-Extractor'
           EOF
 
-          # 2. build.gradle 생성 (최신 문법 적용)
           cat <<EOF > build.gradle
           plugins {
               id 'java-library'
           }
 
-          // 다운로드 전용 설정 그룹 생성
           def downloadConfig = configurations.create("mPaaSDownload")
 
           dependencies {
-              // 이전 로그에서 확인된 가장 유망한 버전을 타격합니다.
-              mPaaSDownload "com.mpaas.android:datacenter:10.2.3-1850000"
+              // [논리적 해결] @aar를 붙여 POM 파일이 없어도 무시하고 바이너리만 가져오도록 강제합니다.
+              // 가장 표준적인 10.2.3 버전을 타겟팅합니다.
+              mPaaSDownload "com.mpaas.android:datacenter:10.2.3@aar"
           }
 
-          // 파일을 복사하는 태스크
           tasks.register('extractSDK', Copy) {
               from downloadConfig
               into "mPaaS_Artifacts"
+              // 저장 시 확장자가 명확하도록 이름을 정리합니다.
+              rename { it.endsWith('.aar') ? it : "${it}.aar" }
           }
           EOF
 
-      - name: Execute Download
+      - name: Execute Download (Bypass POM)
         run: |
-          # --no-daemon 옵션으로 깔끔하게 실행
-          gradle extractSDK --no-daemon --info
+          # --no-daemon으로 깨끗한 환경에서 실행하며, 실패 시에도 로그를 상세히 출력합니다.
+          gradle extractSDK --no-daemon --stacktrace
 
       - name: Zip and Upload
         run: |
-          # 추출된 파일이 있는지 확인하고 압축
-          ls -R mPaaS_Artifacts/
+          ls -R mPaaS_Artifacts/ || echo "No files found"
           zip -r mPaaS_Android_SDK.zip mPaaS_Artifacts/
 
       - name: Upload Artifact
