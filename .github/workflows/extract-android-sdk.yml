@@ -1,41 +1,27 @@
-name: Extract mPaaS SDK Artifacts
-
-on: 
-  workflow_dispatch: # 수동으로 Actions 탭에서 실행할 수 있도록 설정
-  push:
-    branches:
-      - main
-
-jobs:
-  extract-sdk:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          
-      - name: Install dependencies
-        run: pip install requests
-
-      - name: Run Nexus API Extractor Script
+- name: Run Nexus API Extractor Script (Debug Mode)
         run: |
           python -c "
           import requests
           import os
+          import json
 
-          # 분석이 필요한 타겟 컴포넌트 목록
+          # mPaaS 핵심 모듈 명칭
           targets = ['datacenter', 'sqlite', 'security', 'common']
           os.makedirs('mpaas_vault', exist_ok=True)
 
           for target in targets:
-              print(f'[*] Searching for: {target}...')
+              print(f'\n=============================================')
+              print(f'[*] Target Analysis: {target}')
               
-              # Alipay Nexus REST API 엔드포인트 호출 (.aar 파일만 필터링)
-              api_url = f'https://mvn.cloud.alipay.com/nexus/service/rest/v1/search/assets?repository=releases&q={target}&maven.extension=aar'
+              # 단순 키워드(q) 대신 정확한 artifactId로 검색 (mPaaS 구조 반영)
+              api_url = f'https://mvn.cloud.alipay.com/nexus/service/rest/v1/search/assets?repository=releases&maven.artifactId={target}&maven.extension=aar'
               
-              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+              headers = {
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                  'Accept': 'application/json'
+              }
+              
+              print(f'[*] GET {api_url}')
               response = requests.get(api_url, headers=headers)
               
               if response.status_code == 200:
@@ -43,24 +29,23 @@ jobs:
                   items = data.get('items', [])
                   
                   if items:
-                      # 검색된 항목 중 첫 번째(일반적으로 최신) 파일의 다운로드 URL 추출
+                      # 가장 최근 버전의 다운로드 링크 추출
                       download_url = items[0]['downloadUrl']
                       file_name = download_url.split('/')[-1]
-                      print(f'  [+] Found URL: {download_url}')
+                      print(f'[+] Artifact found: {download_url}')
                       
-                      # 실제 .aar 파일 다운로드
-                      file_data = requests.get(download_url, headers=headers).content
-                      with open(f'mpaas_vault/{file_name}', 'wb') as f:
-                          f.write(file_data)
-                      print(f'  [+] Successfully saved {file_name}')
+                      try:
+                          file_data = requests.get(download_url, headers=headers, timeout=30).content
+                          with open(f'mpaas_vault/{file_name}', 'wb') as f:
+                              f.write(file_data)
+                          print(f'[+] Successfully Extracted: {file_name}')
+                      except Exception as e:
+                          print(f'[X] Download failed: {e}')
                   else:
-                      print(f'  [-] No artifacts found for {target}')
+                      print(f'[-] API OK (200), but NO items matched. Server response:')
+                      print(json.dumps(data, indent=2))
               else:
-                  print(f'  [X] API Error {response.status_code} on {target}')
+                  print(f'[X] API Blocked or Error. Status Code: {response.status_code}')
+                  print(f'Response Body: {response.text[:200]}')
+              print(f'=============================================\n')
           "
-
-      - name: Upload SDK to GitHub Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: mpaas-sdk-vault
-          path: mpaas_vault/
