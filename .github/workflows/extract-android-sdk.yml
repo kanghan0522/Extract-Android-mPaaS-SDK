@@ -10,10 +10,10 @@
           # 분석 대상 앱에서 추출한 정보로 아래 목록을 채워주세요.
           # 형식: (Group ID, Artifact ID, Version)
           target_libraries = [
-              ('com.alipay.android.phone.mobilesdk', 'datacenter', '1.0.0.0'), # 예시 버전입니다. 실제 버전을 기입해야 합니다.
-              ('com.alipay.android.phone.mobilesdk', 'sqlite', '1.0.0.0'),
-              ('com.alipay.mobile.security', 'security', '1.0.0.0'),
-              ('com.alipay.mobile.common', 'common', '1.0.0.0')
+              ('com.alipay.android.phone.mobilesdk', 'datacenter', '10.1.68.39'), 
+    ('com.alipay.android.phone.mobilesdk', 'sqlite', '10.1.68.39'),
+    ('com.alipay.mobile.security', 'security', '10.1.68.39'),
+    ('com.alipay.mobile.common', 'common', '10.1.68.39')
           ]
 
           headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
