@@ -1,40 +1,83 @@
-- name: Run Direct Download Script
+name: Extract ALL Versions of mPaaS SDK
+
+on: 
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  extract-sdk:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run Metadata Parser & Bulk Downloader
         run: |
           python -c "
           import requests
           import os
+          import xml.etree.ElementTree as ET
 
           os.makedirs('mpaas_vault', exist_ok=True)
           base_repo_url = 'https://mvn.cloud.alipay.com/nexus/content/repositories/releases'
 
-          # 분석 대상 앱에서 추출한 정보로 아래 목록을 채워주세요.
-          # 형식: (Group ID, Artifact ID, Version)
+          # 타겟 라이브러리 (Group ID, Artifact ID)
+          # 주의: security와 common의 Group ID는 일반적인 추정치입니다. 404 발생 시 이 부분을 실제 앱 패키지명에 맞게 수정해야 합니다.
           target_libraries = [
-              ('com.alipay.android.phone.mobilesdk', 'datacenter', '10.1.68.39'), 
-    ('com.alipay.android.phone.mobilesdk', 'sqlite', '10.1.68.39'),
-    ('com.alipay.mobile.security', 'security', '10.1.68.39'),
-    ('com.alipay.mobile.common', 'common', '10.1.68.39')
+              ('com.alipay.android.phone.mobilesdk', 'datacenter'),
+              ('com.alipay.android.phone.mobilesdk', 'sqlite'),
+              ('com.alipay.mobile.security', 'security'), 
+              ('com.alipay.mobile.common', 'common')
           ]
 
           headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-          for group_id, artifact_id, version in target_libraries:
-              print(f'\n[*] Target: {artifact_id} ({version})')
+          for group_id, artifact_id in target_libraries:
+              print(f'\n=============================================')
+              print(f'[*] Target Analysis: {artifact_id}')
               
-              # Maven 경로 규칙에 따른 URL 생성
               group_path = group_id.replace('.', '/')
-              file_name = f'{artifact_id}-{version}.aar'
-              direct_url = f'{base_repo_url}/{group_path}/{artifact_id}/{version}/{file_name}'
+              metadata_url = f'{base_repo_url}/{group_path}/{artifact_id}/maven-metadata.xml'
               
-              print(f'[*] Requesting: {direct_url}')
-              response = requests.get(direct_url, headers=headers)
+              print(f'[*] Fetching Metadata: {metadata_url}')
+              meta_res = requests.get(metadata_url, headers=headers)
               
-              if response.status_code == 200:
-                  with open(f'mpaas_vault/{file_name}', 'wb') as f:
-                      f.write(response.content)
-                  print(f'[+] Success: Saved {file_name}')
-              elif response.status_code == 404:
-                  print(f'[X] Error 404: File not found at this exact path. (Check Group ID or Version)')
+              if meta_res.status_code == 200:
+                  # XML 파싱을 통해 모든 버전 추출
+                  root = ET.fromstring(meta_res.text)
+                  versions = [v.text for v in root.findall('.//version')]
+                  print(f'[+] Found {len(versions)} versions for {artifact_id}.')
+                  
+                  # 모든 버전 다운로드 실행
+                  for version in versions:
+                      file_name = f'{artifact_id}-{version}.aar'
+                      direct_url = f'{base_repo_url}/{group_path}/{artifact_id}/{version}/{file_name}'
+                      
+                      print(f'  -> Downloading {version}... ', end='')
+                      dl_res = requests.get(direct_url, headers=headers)
+                      
+                      if dl_res.status_code == 200:
+                          with open(f'mpaas_vault/{file_name}', 'wb') as f:
+                              f.write(dl_res.content)
+                          print('OK')
+                      else:
+                          print(f'Fail (HTTP {dl_res.status_code})')
               else:
-                  print(f'[X] Error {response.status_code}')
+                  print(f'[X] Metadata NOT FOUND (HTTP {meta_res.status_code}).')
+                  print(f'    Reason: Group ID \'{group_id}\' might be incorrect for this artifact.')
+              print(f'=============================================\n')
           "
+
+      - name: Upload Bulk SDK to GitHub Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mpaas-sdk-vault-all-versions
+          path: mpaas_vault/
