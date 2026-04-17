@@ -1,89 +1,66 @@
-name: Android SDK Smart Extraction
+name: Extract mPaaS SDK Artifacts
 
 on: 
-  workflow_dispatch:
+  workflow_dispatch: # 수동으로 Actions 탭에서 실행할 수 있도록 설정
+  push:
+    branches:
+      - main
 
 jobs:
-  extract:
+  extract-sdk:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
-      - name: Install requests
+          
+      - name: Install dependencies
         run: pip install requests
 
-      - name: Brute-Force Path Discovery
-        shell: python
+      - name: Run Nexus API Extractor Script
         run: |
+          python -c "
           import requests
           import os
-          import sys
 
-          base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
-          output_dir = "mPaaS_Final_Artifacts"
-          os.makedirs(output_dir, exist_ok=True)
+          # 분석이 필요한 타겟 컴포넌트 목록
+          targets = ['datacenter', 'sqlite', 'security', 'common']
+          os.makedirs('mpaas_vault', exist_ok=True)
 
-          # [수사 대상] mPaaS가 사용하는 두 가지 주요 경로 체계
-          path_templates = [
-              "com/mpaas/android/{name}/{ver}/{name}-{ver}.aar",
-              "com/alipay/android/phone/mobilesdk/{name}-build/{ver}/{name}-build-{ver}.aar"
-          ]
-
-          # [분석 타겟]
-          target_names = ["datacenter", "sqlite", "security", "common"]
-          
-          # [버전 후보] 베이스라인 버전과 표준 버전 혼합
-          versions = ["10.2.3-1850000", "10.2.3", "10.1.68"]
-
-          print(f"[*] Starting Deep Scan on {base_url}...")
-          found_count = 0
-
-          for name in target_names:
-              print(f"\n[Searching for: {name}]")
-              success_for_this_target = False
+          for target in targets:
+              print(f'[*] Searching for: {target}...')
               
-              for template in path_templates:
-                  for ver in versions:
-                      file_path = template.format(name=name, ver=ver)
-                      file_url = f"{base_url}/{file_path}"
+              # Alipay Nexus REST API 엔드포인트 호출 (.aar 파일만 필터링)
+              api_url = f'https://mvn.cloud.alipay.com/nexus/service/rest/v1/search/assets?repository=releases&q={target}&maven.extension=aar'
+              
+              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+              response = requests.get(api_url, headers=headers)
+              
+              if response.status_code == 200:
+                  data = response.json()
+                  items = data.get('items', [])
+                  
+                  if items:
+                      # 검색된 항목 중 첫 번째(일반적으로 최신) 파일의 다운로드 URL 추출
+                      download_url = items[0]['downloadUrl']
+                      file_name = download_url.split('/')[-1]
+                      print(f'  [+] Found URL: {download_url}')
                       
-                      try:
-                          # HEAD 요청으로 파일 존재 여부만 빠르게 확인
-                          r = requests.head(file_url, timeout=10)
-                          if r.status_code == 200:
-                              print(f"  [!] FOUND: {file_url}")
-                              # 본 파일 다운로드
-                              content = requests.get(file_url).content
-                              with open(f"{output_dir}/{name}_{ver}.aar", "wb") as f:
-                                  f.write(content)
-                              found_count += 1
-                              success_for_this_target = True
-                              break # 이 타겟은 하나 찾았으면 다음 타겟으로
-                      except:
-                          continue
-                  if success_for_this_target: break
+                      # 실제 .aar 파일 다운로드
+                      file_data = requests.get(download_url, headers=headers).content
+                      with open(f'mpaas_vault/{file_name}', 'wb') as f:
+                          f.write(file_data)
+                      print(f'  [+] Successfully saved {file_name}')
+                  else:
+                      print(f'  [-] No artifacts found for {target}')
+              else:
+                  print(f'  [X] API Error {response.status_code} on {target}')
+          "
 
-          if found_count == 0:
-              print("\n[X] FATAL ERROR: No AAR files found. The vault is empty!")
-              sys.exit(1)
-          else:
-              print(f"\n[+] SUCCESS: Secured {found_count} artifacts.")
-
-      - name: Zip and Upload
-        run: |
-          # 추출된 파일 목록을 로그에 출력 (분석가용)
-          ls -R mPaaS_Final_Artifacts/
-          zip -r mPaaS_Android_SDK.zip mPaaS_Final_Artifacts/
-
-      - name: Upload Result
+      - name: Upload SDK to GitHub Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Android_Full_SDK
-          path: mPaaS_Android_SDK.zip
-          retention-days: 1
+          name: mpaas-sdk-vault
+          path: mpaas_vault/
