@@ -1,10 +1,10 @@
-name: Scan Latest mPaaS Versions
+name: Final AAR Existence Radar
 
 on: 
   workflow_dispatch:
 
 jobs:
-  scan_versions:
+  ping_true_aars:
     runs-on: ubuntu-latest
     steps:
       - name: Set up Python
@@ -15,49 +15,43 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Check Maven Metadata
+      - name: Ping Latest Hotfix AARs
         shell: python
         run: |
           import requests
-          import xml.etree.ElementTree as ET
 
           base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android"
-          
-          # [타겟] 우리가 의심하고 있는 핵심 모듈들
-          modules = [
-              "datacenter",
-              "sqlite",
-              "storage",
-              "secstorage",
-              "security",
-              "gmssl",
-              "mpaas-baseline"
-          ]
+          latest_ver = "cp_change_38379.1860000"
 
-          print("[*] Scanning Alipay Server for Latest Versions...\n")
+          # 방금 스캔으로 살아있음이 확인된 타겟들
+          targets = ["storage", "secstorage", "gmssl"]
 
-          for mod in modules:
-              metadata_url = f"{base_url}/{mod}/maven-metadata.xml"
+          print(f"[*] Targeting Exact AAR Files for version {latest_ver}...\n")
+
+          for t in targets:
+              aar_url = f"{base_url}/{t}/{latest_ver}/{t}-{latest_ver}.aar"
+              print(f"Checking URL: {aar_url}")
+              
               try:
-                  r = requests.get(metadata_url, timeout=10)
-                  if r.status_code == 200:
-                      root = ET.fromstring(r.text)
-                      
-                      # <latest> 태그나 <release> 태그를 찾음
-                      latest = root.find('.//versioning/latest')
-                      release = root.find('.//versioning/release')
-                      
-                      # 명시적인 최신 버전 태그가 없다면 <versions> 목록의 맨 마지막 것을 가져옴
-                      if latest is not None and latest.text:
-                          latest_ver = latest.text
-                      elif release is not None and release.text:
-                          latest_ver = release.text
+                  # stream=True로 설정하여 헤더(용량/상태)만 먼저 봅니다.
+                  r = requests.get(aar_url, stream=True, timeout=10)
+                  status = r.status_code
+                  
+                  if status == 200:
+                      size_bytes = r.headers.get('content-length')
+                      if size_bytes and size_bytes.isdigit():
+                          size_kb = int(size_bytes) / 1024
+                          if size_kb < 5:
+                              print(f"  [⚠️ 200 OK] File exists, but it's only {size_kb:.1f} KB. (Likely a fake 401 block file)\n")
+                          else:
+                              print(f"  [✅ 200 OK] TRUE FILE EXISTS! Size: {size_kb / 1024:.2f} MB\n")
                       else:
-                          versions = root.findall('.//versions/version')
-                          latest_ver = versions[-1].text if versions else "Unknown"
-
-                      print(f"  [+] {mod.ljust(15)} : 최신 버전 ➔ {latest_ver}")
+                          print("  [✅ 200 OK] File exists! (Size unknown)\n")
+                  elif status == 404:
+                      print("  [❌ 404] Not Found. (Path is wrong or removed)\n")
+                  elif status in [401, 403]:
+                      print(f"  [🔒 {status}] Server confirms file exists, but access is BLOCKED.\n")
                   else:
-                      print(f"  [-] {mod.ljust(15)} : 서버에 모듈이 존재하지 않음 (404)")
+                      print(f"  [❓ {status}] Unknown response.\n")
               except Exception as e:
-                  print(f"  [!] Error checking {mod}: {e}")
+                  print(f"  [Error] {e}\n")
