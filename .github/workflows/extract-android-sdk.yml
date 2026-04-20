@@ -1,10 +1,10 @@
-name: Steal Master BOM (Raw Data)
+name: Extract True mPaaS AARs
 
 on: 
   workflow_dispatch:
 
 jobs:
-  steal_bom:
+  extract:
     runs-on: ubuntu-latest
     steps:
       - name: Set up Python
@@ -15,31 +15,50 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Download Raw BOM
+      - name: Download Verified AARs
         shell: python
         run: |
           import requests
           import os
 
-          bom_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
-          os.makedirs("mPaaS_Intel", exist_ok=True)
-          
-          print(f"[*] Downloading Master BOM from: {bom_url}")
-          # 인증 없이 접근 가능했던 URL
-          r = requests.get(bom_url, timeout=15)
-          
-          if r.status_code == 200:
-              print("[+] Success! Master BOM Secured.")
-              # 분석이 쉽도록 확장자를 .xml로 변경하여 저장
-              with open("mPaaS_Intel/mpaas-baseline-10.2.3.xml", "w", encoding="utf-8") as f:
-                  f.write(r.text)
-          else:
-              print(f"[X] Failed with status {r.status_code}")
-              exit(1)
+          # 지도를 통해 확인된 정확한 기본 주소와 점(.)이 포함된 버전
+          base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android"
+          version = "10.2.3.1850000"
 
-      - name: Upload BOM Artifact
+          # [핵심] 지도에서 찾아낸 DB/암호화 관련 진짜 이름들
+          targets = [
+              "storage", 
+              "secstorage", 
+              "gmssl", 
+              "isec", 
+              "security_detect",
+              "framework"
+          ]
+
+          os.makedirs("mPaaS_AARs", exist_ok=True)
+          print(f"[*] Extracting true artifacts for version {version}...\n")
+
+          for t in targets:
+              url = f"{base_url}/{t}/{version}/{t}-{version}.aar"
+              print(f"[?] Fetching: {t}.aar")
+              r = requests.get(url, stream=True)
+              
+              if r.status_code == 200:
+                  print(f"  [+++] SUCCESS! Secured {t}.aar")
+                  with open(f"mPaaS_AARs/{t}-{version}.aar", "wb") as f:
+                      for chunk in r.iter_content(chunk_size=8192):
+                          f.write(chunk)
+              else:
+                  print(f"  [X] Failed (Status: {r.status_code})")
+
+      - name: Zip and Upload
+        run: |
+          ls -lh mPaaS_AARs/
+          zip -r mPaaS_Android_SDK_Final.zip mPaaS_AARs/
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: mPaaS_Master_BOM_Raw
-          path: mPaaS_Intel/
+          name: mPaaS_Target_AARs
+          path: mPaaS_Android_SDK_Final.zip
           retention-days: 1
