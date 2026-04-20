@@ -1,122 +1,58 @@
-name: Hunt for libdatabase_sqlcrypto.so
+name: Pure File Existence Radar
 
 on: 
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
-  hunt-crypto:
+  ping:
     runs-on: ubuntu-latest
-    
     steps:
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-          
-      - name: Install dependencies
+
+      - name: Install requests
         run: pip install requests
 
-      - name: Run Crypto Deep Hunter Script
+      - name: Send Radar Pings
+        shell: python
         run: |
-          python -c "
           import requests
-          import os
-          import xml.etree.ElementTree as ET
-          import zipfile
-          import shutil
 
-          # 저장할 폴더 생성
-          os.makedirs('mpaas_vault', exist_ok=True)
-          os.makedirs('extracted_so', exist_ok=True)
-          
-          base_url = 'https://mvn.cloud.alipay.com/nexus/content/repositories/releases'
-          target_file = 'libdatabase_sqlcrypto.so'
-          
-          # mPaaS에서 사용될 가능성이 높은 Group ID 리스트 (사전 대입)
-          group_ids = [
-              'com.alipay.android.phone.mobilesdk',
-              'com.alipay.mobile.base',
-              'com.mpaas.android',
-              'com.mpaas.android.sqlite',
-              'com.alipay.android',
-              'com.alipay.mobile'
-          ]
-          
-          # DB/암호화 관련 아티팩트 명칭 리스트
-          artifact_ids = ['sqlite', 'wcdb', 'datacenter', 'sqlcrypto', 'database']
-          
-          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-          found_target = False
-
-          print(f'[*] Starting Deep Hunt for {target_file}...\n')
-
-          for gid in group_ids:
-              if found_target: break
-              group_path = gid.replace('.', '/')
+          # [확인 대상] 우리가 찾고자 하는 알맹이(AAR) 파일들의 정확한 예상 주소들
+          urls_to_check = [
+              # 1. mPaaS 표준 경로
+              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/datacenter/10.2.3-1850000/datacenter-10.2.3-1850000.aar",
+              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/sqlite/10.2.3-1850000/sqlite-10.2.3-1850000.aar",
               
-              for aid in artifact_ids:
-                  if found_target: break
+              # 2. Alipay 내부 빌드 경로
+              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/alipay/android/phone/mobilesdk/datacenter-build/10.2.3-1850000/datacenter-build-10.2.3-1850000.aar",
+              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/alipay/android/phone/mobilesdk/sqlite-build/10.2.3-1850000/sqlite-build-10.2.3-1850000.aar",
+              
+              # 3. [대조군] 이전에 성공했던 POM(지도) 파일 - 이것은 무조건 200이 떠야 합니다.
+              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
+          ]
+
+          print("[*] Sending Radar Pings to Alipay Server...\n")
+
+          for url in urls_to_check:
+              print(f"Checking URL: {url}")
+              try:
+                  # stream=True로 설정하여 내용물은 받지 않고 헤더만 빠르게 확인합니다.
+                  r = requests.get(url, stream=True, timeout=10)
+                  status = r.status_code
                   
-                  # 1. 메타데이터(버전 목록) 확인
-                  meta_url = f'{base_url}/{group_path}/{aid}/maven-metadata.xml'
-                  try:
-                      res = requests.get(meta_url, headers=headers, timeout=5)
-                      if res.status_code == 200:
-                          print(f'[+] Valid Module Found: {gid}:{aid}')
-                          root = ET.fromstring(res.text)
-                          versions = [v.text for v in root.findall('.//version')]
-                          
-                          if not versions: continue
-                          
-                          # 2. 가장 최신 버전 선택
-                          latest_version = versions[-1]
-                          print(f'  -> Fetching latest version: {latest_version}')
-                          
-                          aar_name = f'{aid}-{latest_version}.aar'
-                          dl_url = f'{base_url}/{group_path}/{aid}/{latest_version}/{aar_name}'
-                          
-                          # 3. 최신 SDK 다운로드
-                          dl_res = requests.get(dl_url, headers=headers)
-                          if dl_res.status_code == 200:
-                              temp_aar = f'temp_{aar_name}'
-                              with open(temp_aar, 'wb') as f:
-                                  f.write(dl_res.content)
-                                  
-                              # 4. 압축 해제 후 내부에서 .so 파일 스캔
-                              with zipfile.ZipFile(temp_aar, 'r') as zip_ref:
-                                  file_list = zip_ref.namelist()
-                                  so_paths = [f for f in file_list if target_file in f]
-                                  
-                                  if so_paths:
-                                      print(f'\n[★★★ BINGO ★★★] Found target inside {aar_name}!')
-                                      
-                                      # 발견된 원본 SDK 복사
-                                      shutil.copy(temp_aar, f'mpaas_vault/{aar_name}')
-                                      
-                                      # 발견된 .so 파일만 따로 추출하여 저장 (여러 아키텍처 지원)
-                                      for path in so_paths:
-                                          zip_ref.extract(path, 'extracted_so')
-                                          print(f'  -> Extracted: {path}')
-                                          
-                                      found_target = True
-                              
-                              # 임시 파일 삭제
-                              os.remove(temp_aar)
-                  except Exception as e:
-                      pass
-
-          if not found_target:
-              print(f'\n[X] Scan complete. Could not find {target_file} in standard public mPaaS paths.')
-              print(f'[*] Recommendation: The module might be fully private or uses a different Group ID.')
-          "
-
-      - name: Upload Target SDK & .so Files
-        uses: actions/upload-artifact@v4
-        with:
-          name: Extracted-Crypto-Artifacts
-          path: |
-            mpaas_vault/
-            extracted_so/
+                  if status == 200:
+                      # 200이면 파일이 무조건 존재함. 용량도 확인.
+                      size_bytes = r.headers.get('content-length', 'Unknown')
+                      size_mb = round(int(size_bytes) / (1024 * 1024), 2) if size_bytes.isdigit() else 'Unknown'
+                      print(f"  [✅ 200 OK] FILE EXISTS! (Size: {size_mb} MB)\n")
+                  elif status == 404:
+                      print(f"  [❌ 404 Not Found] FILE DOES NOT EXIST at this path.\n")
+                  elif status == 401 or status == 403:
+                      print(f"  [🔒 {status} Locked] File might exist, but access is blocked.\n")
+                  else:
+                      print(f"  [❓ {status} Unknown] Server responded with an unusual code.\n")
+              except Exception as e:
+                  print(f"  [⚠️ Error] Connection failed: {e}\n")
