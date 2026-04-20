@@ -1,10 +1,10 @@
-name: Pure File Existence Radar
+name: BOM Tracker & Extractor
 
 on: 
   workflow_dispatch:
 
 jobs:
-  ping:
+  track_and_extract:
     runs-on: ubuntu-latest
     steps:
       - name: Set up Python
@@ -12,47 +12,84 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install requests
+      - name: Install dependencies
         run: pip install requests
 
-      - name: Send Radar Pings
+      - name: Parse BOM and Extract
         shell: python
         run: |
           import requests
+          import xml.etree.ElementTree as ET
+          import re
+          import os
 
-          # [확인 대상] 우리가 찾고자 하는 알맹이(AAR) 파일들의 정확한 예상 주소들
-          urls_to_check = [
-              # 1. mPaaS 표준 경로
-              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/datacenter/10.2.3-1850000/datacenter-10.2.3-1850000.aar",
-              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/sqlite/10.2.3-1850000/sqlite-10.2.3-1850000.aar",
+          # 1. 200 OK가 확인된 마스터 설계도 주소
+          bom_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
+          base_repo = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases"
+          
+          os.makedirs("mPaaS_Target_AARs", exist_ok=True)
+          
+          print(f"[*] Downloading Master BOM: {bom_url}")
+          r = requests.get(bom_url)
+          
+          if r.status_code != 200:
+              print("[X] Failed to get BOM.")
+              exit(1)
               
-              # 2. Alipay 내부 빌드 경로
-              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/alipay/android/phone/mobilesdk/datacenter-build/10.2.3-1850000/datacenter-build-10.2.3-1850000.aar",
-              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/alipay/android/phone/mobilesdk/sqlite-build/10.2.3-1850000/sqlite-build-10.2.3-1850000.aar",
+          print("[+] BOM Downloaded. Parsing true coordinates...")
+          
+          # XML 파싱을 쉽게 하기 위해 namespace 제거
+          xml_data = re.sub(r'\sxmlns="[^"]+"', '', r.text, count=1)
+          root = ET.fromstring(xml_data)
+          
+          # POM 내부의 모든 의존성 목록 가져오기
+          dependencies = root.findall('.//dependency')
+          
+          # 우리가 찾는 암호화/DB 관련 키워드
+          target_keywords = ['datacenter', 'sqlite', 'sqlcrypto', 'wcdb', 'database']
+          
+          found_count = 0
+          
+          for dep in dependencies:
+              group_id = dep.findtext('groupId')
+              artifact_id = dep.findtext('artifactId')
+              version = dep.findtext('version')
               
-              # 3. [대조군] 이전에 성공했던 POM(지도) 파일 - 이것은 무조건 200이 떠야 합니다.
-              "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android/mpaas-baseline/10.2.3-1850000/mpaas-baseline-10.2.3-1850000.pom"
-          ]
-
-          print("[*] Sending Radar Pings to Alipay Server...\n")
-
-          for url in urls_to_check:
-              print(f"Checking URL: {url}")
-              try:
-                  # stream=True로 설정하여 내용물은 받지 않고 헤더만 빠르게 확인합니다.
-                  r = requests.get(url, stream=True, timeout=10)
-                  status = r.status_code
+              # artifact_id에 우리가 찾는 키워드가 포함되어 있다면
+              if artifact_id and any(keyword in artifact_id.lower() for keyword in target_keywords):
+                  print(f"\n[!] MATCH FOUND IN BOM: {group_id} : {artifact_id} : {version}")
                   
-                  if status == 200:
-                      # 200이면 파일이 무조건 존재함. 용량도 확인.
-                      size_bytes = r.headers.get('content-length', 'Unknown')
-                      size_mb = round(int(size_bytes) / (1024 * 1024), 2) if size_bytes.isdigit() else 'Unknown'
-                      print(f"  [✅ 200 OK] FILE EXISTS! (Size: {size_mb} MB)\n")
-                  elif status == 404:
-                      print(f"  [❌ 404 Not Found] FILE DOES NOT EXIST at this path.\n")
-                  elif status == 401 or status == 403:
-                      print(f"  [🔒 {status} Locked] File might exist, but access is blocked.\n")
+                  # 진짜 다운로드 주소 조립
+                  group_path = group_id.replace('.', '/')
+                  true_aar_url = f"{base_repo}/{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.aar"
+                  
+                  print(f"  -> Testing Real URL: {true_aar_url}")
+                  
+                  # 진짜 주소로 AAR 요청
+                  res = requests.get(true_aar_url, stream=True)
+                  if res.status_code == 200:
+                      print("  [✅ SUCCESS] File exists! Downloading...")
+                      with open(f"mPaaS_Target_AARs/{artifact_id}-{version}.aar", "wb") as f:
+                          for chunk in res.iter_content(chunk_size=8192):
+                              f.write(chunk)
+                      found_count += 1
                   else:
-                      print(f"  [❓ {status} Unknown] Server responded with an unusual code.\n")
-              except Exception as e:
-                  print(f"  [⚠️ Error] Connection failed: {e}\n")
+                      print(f"  [❌ 404] Listed in BOM, but AAR is missing (Might be a pure POM dependency).")
+
+          if found_count == 0:
+              print("\n[X] Could not download any AAR files. They might be completely hidden.")
+              exit(1)
+          else:
+              print(f"\n[+++] Operation Complete. Secured {found_count} artifacts.")
+
+      - name: Zip and Upload
+        run: |
+          ls -lh mPaaS_Target_AARs/
+          zip -r mPaaS_Android_SDK.zip mPaaS_Target_AARs/
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mPaaS_True_Android_AARs
+          path: mPaaS_Android_SDK.zip
+          retention-days: 1
