@@ -1,10 +1,10 @@
-name: Extract True mPaaS AARs
+name: Scan Latest mPaaS Versions
 
 on: 
   workflow_dispatch:
 
 jobs:
-  extract:
+  scan_versions:
     runs-on: ubuntu-latest
     steps:
       - name: Set up Python
@@ -15,50 +15,49 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Download Verified AARs
+      - name: Check Maven Metadata
         shell: python
         run: |
           import requests
-          import os
+          import xml.etree.ElementTree as ET
 
-          # 지도를 통해 확인된 정확한 기본 주소와 점(.)이 포함된 버전
           base_url = "https://mvn.cloud.alipay.com/nexus/content/repositories/releases/com/mpaas/android"
-          version = "10.2.3.1850000"
-
-          # [핵심] 지도에서 찾아낸 DB/암호화 관련 진짜 이름들
-          targets = [
-              "storage", 
-              "secstorage", 
-              "gmssl", 
-              "isec", 
-              "security_detect",
-              "framework"
+          
+          # [타겟] 우리가 의심하고 있는 핵심 모듈들
+          modules = [
+              "datacenter",
+              "sqlite",
+              "storage",
+              "secstorage",
+              "security",
+              "gmssl",
+              "mpaas-baseline"
           ]
 
-          os.makedirs("mPaaS_AARs", exist_ok=True)
-          print(f"[*] Extracting true artifacts for version {version}...\n")
+          print("[*] Scanning Alipay Server for Latest Versions...\n")
 
-          for t in targets:
-              url = f"{base_url}/{t}/{version}/{t}-{version}.aar"
-              print(f"[?] Fetching: {t}.aar")
-              r = requests.get(url, stream=True)
-              
-              if r.status_code == 200:
-                  print(f"  [+++] SUCCESS! Secured {t}.aar")
-                  with open(f"mPaaS_AARs/{t}-{version}.aar", "wb") as f:
-                      for chunk in r.iter_content(chunk_size=8192):
-                          f.write(chunk)
-              else:
-                  print(f"  [X] Failed (Status: {r.status_code})")
+          for mod in modules:
+              metadata_url = f"{base_url}/{mod}/maven-metadata.xml"
+              try:
+                  r = requests.get(metadata_url, timeout=10)
+                  if r.status_code == 200:
+                      root = ET.fromstring(r.text)
+                      
+                      # <latest> 태그나 <release> 태그를 찾음
+                      latest = root.find('.//versioning/latest')
+                      release = root.find('.//versioning/release')
+                      
+                      # 명시적인 최신 버전 태그가 없다면 <versions> 목록의 맨 마지막 것을 가져옴
+                      if latest is not None and latest.text:
+                          latest_ver = latest.text
+                      elif release is not None and release.text:
+                          latest_ver = release.text
+                      else:
+                          versions = root.findall('.//versions/version')
+                          latest_ver = versions[-1].text if versions else "Unknown"
 
-      - name: Zip and Upload
-        run: |
-          ls -lh mPaaS_AARs/
-          zip -r mPaaS_Android_SDK_Final.zip mPaaS_AARs/
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mPaaS_Target_AARs
-          path: mPaaS_Android_SDK_Final.zip
-          retention-days: 1
+                      print(f"  [+] {mod.ljust(15)} : 최신 버전 ➔ {latest_ver}")
+                  else:
+                      print(f"  [-] {mod.ljust(15)} : 서버에 모듈이 존재하지 않음 (404)")
+              except Exception as e:
+                  print(f"  [!] Error checking {mod}: {e}")
